@@ -20,6 +20,7 @@ import pulp
 from scipy.optimize import minimize
 import cvxpy as cp
 from itertools import combinations
+from matplotlib import pyplot as plt
 
 def split_list(lst, n):
     """Split a list into n (roughly) equal-sized chunks"""
@@ -195,7 +196,7 @@ def generate_pdf(filepath=None):
 
     # x_optimal = binary_linear_PULP(frame_embeddings_norm.to('cpu').T, video_embedding_norm.to('cpu'))
     # X = solve_sparse_binary_greedy(frame_embeddings_norm.to('cpu').T, video_embedding_norm.to('cpu'))
-    x = solve_with_lasso(frame_embeddings_norm.to('cpu').T, video_embedding_norm.to('cpu'))
+    best_x, best_error, best_lambda = solve_with_lasso(frame_embeddings_norm.to('cpu').T, video_embedding_norm.to('cpu'))
 
 
     downsample_num = 240
@@ -209,165 +210,6 @@ def generate_pdf(filepath=None):
 
     # array([0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 
-def solve_sparse_binary_greedy(A, y, tolerance=1e-6):
-    """
-    Solve Ax = y where x is binary using a greedy approach
-    Finds minimal set of vectors from A that best approximate y
-    
-    Parameters:
-    A: numpy array of shape [m, n] - frame embeddings
-    y: numpy array of shape [m] - video embedding
-    tolerance: error tolerance for solution
-    
-    Returns:
-    x: binary solution vector
-    error: final error
-    selected_indices: indices of selected frames
-    """
-    A = A.type(torch.float32)
-    y = y.type(torch.float32)
-    m, n = A.shape
-    
-    max_ones = None
-    best_x = None
-    best_error = float('inf')
-    best_lambda = None
-    
-    # If max_ones is not specified, try up to n/2 ones
-    if max_ones is None:
-        max_ones = n // 2
-    
-    # Try combinations with increasing number of ones
-    for num_ones in range(1, max_ones + 1):
-        # Try all possible combinations of num_ones positions
-        for ones_positions in combinations(range(n), num_ones):
-            # Create binary vector
-            x = np.zeros(n)
-            x[list(ones_positions)] = 1
-            
-            # Calculate Ax
-            Ax = A @ x
-            
-            # Calculate scaling factor lambda to make λAx unit length
-            lambda_scale = 1.0 / np.linalg.norm(Ax)
-            
-            # Scale Ax to unit length
-            Ax_normalized = Ax * lambda_scale
-            
-            # Calculate error (1 - cosine similarity)
-            error = 1.0 - np.dot(Ax_normalized, y)
-            
-            # Update best solution if this is better
-            if error < best_error:
-                best_error = error
-                best_x = x
-                best_lambda = lambda_scale
-                
-                # If error is very small, we can stop
-                if error < 1e-10:
-                    return best_x, best_error, best_lambda
-
-    # m, n = A.shape
-    # x = torch.zeros(n)
-    # residual = y.clone()
-    # residual = residual.type(torch.float32)
-    # selected_indices = []
-
-    # while True:
-    #     # Compute correlation between residual and remaining vectors
-    #     scores = torch.abs(A.T @ residual)
-        
-    #     # Zero out already selected indices
-    #     scores[selected_indices] = 0
-        
-    #     # Find best matching vector
-    #     best_idx = torch.argmax(scores).item()
-        
-    #     # If we're not improving significantly, stop
-    #     if scores[best_idx] < tolerance:
-    #         break
-            
-    #     # Add the vector
-    #     selected_indices.append(best_idx)
-    #     x[best_idx] = 1
-        
-    #     # Update residual
-    #     current_approx = A @ x
-    #     residual = y - current_approx
-        
-    #     # Check if we're close enough
-    #     error = np.linalg.norm(residual)
-    #     if error < tolerance:
-    #         break
-            
-    # return x, np.linalg.norm(A @ x - y), selected_indices
-
-def solve_sparse_binary(A, y, max_iter=1000):
-    """
-    Solve Ax = y where x is binary and we want minimum number of 1s
-    
-    Parameters:
-    A: numpy array of shape [m, n]
-    y: numpy array of shape [m]
-    max_iter: maximum number of iterations
-    
-    Returns:
-    x: binary solution vector
-    error: final error
-    """
-    m, n = A.shape
-    
-    # Initialize CVXPY problem
-    x = cp.Variable(n, boolean=True)
-    objective = cp.sum(x)  # Minimize number of 1s
-    
-    # Constraints
-    constraints = [
-        cp.norm(A @ x - y) <= 10  # Ax ≈ y
-    ]
-    
-    # Define and solve the problem
-    prob = cp.Problem(cp.Minimize(objective), constraints)
-    
-    try:
-        # Try solving with MOSEK if available (handles binary variables well)
-        prob.solve(solver=cp.MOSEK)
-    except:
-        # Fall back to default solver
-        prob.solve()
-    
-    if prob.status != cp.OPTIMAL:
-        # If no optimal solution found, try relaxed version
-        return solve_relaxed(A, y, max_iter)
-    
-    return x.value, prob.value
-
-def solve_relaxed(A, y, max_iter):
-    """
-    Solve relaxed version if binary optimization fails
-    Uses continuous optimization and then thresholds
-    """
-    m, n = A.shape
-    
-    # Initialize with continuous values
-    x = cp.Variable(n)
-    objective = cp.norm1(x)  # L1 norm promotes sparsity
-    
-    constraints = [
-        cp.norm(A @ x - y) <= 1e-6,
-        0 <= x, x <= 1  # Box constraints
-    ]
-    
-    prob = cp.Problem(cp.Minimize(objective), constraints)
-    prob.solve(max_iter=max_iter)
-    
-    # Threshold to get binary solution
-    x_binary = np.where(x.value > 0.5, 1, 0)
-    
-    # Compute final error
-    error = np.linalg.norm(A @ x_binary - y)
-    
-    return x_binary, error
 
 def l0_optimization(A, y):
     """
@@ -389,42 +231,6 @@ def l0_optimization(A, y):
             lowest_l0_error = l0_error
 
     return selected_frame_combo   
-
-def binary_linear_PULP(A, y):
-    """
-    A: [m, n] = frame_embeddings_norm
-    y: [m] = video_embedding_norm
-    """
-    m, n = A.shape[0], A.shape[1]
-    # Create the problem
-    prob = pulp.LpProblem("Minimum_Vectors", pulp.LpMinimize)
-
-    # Decision variables
-    x = pulp.LpVariable.dicts("Vector", range(n), cat='Binary')
-
-    # Objective function
-    prob += pulp.lpSum([x[i] for i in range(n)])
-
-    # Constraints
-    # for i in range(m):
-    #     prob += pulp.lpSum([A[i, j].item() * x[j] for j in range(n)]) == y[i].item() 
-    for i in tqdm(range(m), desc="Adding constraints"):  # Add tqdm here
-        prob += pulp.lpSum([A[i, j].item() * x[j] for j in range(n)]) == y[i].item() 
-    # Solve the problem
-    prob.solve()
-
-    # Print the status of the solution
-    print("Status:", pulp.LpStatus[prob.status])
-
-    # Print the optimal solution
-    if prob.status == pulp.LpStatusOptimal:
-        x_optimal = np.array([x[i].varValue for i in range(n)])
-        print("Optimal x:", x_optimal)
-        print("Number of vectors used:", np.sum(x_optimal))
-        return x_optimal
-    else:
-        print("Optimization failed.")
-        return None
 
 def solve_with_lasso(A, y, alpha_range=None):
     """
@@ -483,6 +289,18 @@ def solve_with_lasso(A, y, alpha_range=None):
         raise ValueError("Could not find non-zero solution with Lasso")
         
     return best_x, best_error, best_lambda
+
+def visualize():
+    fig, axes = plt.subplots(2, int(len(nonzero_indices[0])/2))
+    t = 0
+    for i in range(2):
+        for j in range(4):
+            img_path = f"/scratch3/kat049/STVT/STVT/STVT/datasets/datasets/datasets/ydata-tvsum50-v1_1/images/_xMr-HKMfVA/frame_{nonzero_indices[0][t]:04d}.jpg"
+            axes[i,j].imshow(Image.open(img_path))
+            axes[i,j].axis('off')
+            t +=1
+    plt.savefig('test.jpg')
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
