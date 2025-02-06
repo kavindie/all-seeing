@@ -194,22 +194,23 @@ def generate_pdf(filepath=None):
     argmax_img_path = f"/scratch3/kat049/STVT/STVT/STVT/datasets/datasets/datasets/ydata-tvsum50-v1_1/images/_xMr-HKMfVA/frame_{argmax_img_num:04d}.jpg"
     Image.open(argmax_img_path).save(f'/scratch3/kat049/all-seeing/all-seeing-v2/temp_sgc/argmax_img.jpg')
 
-    # x_optimal = binary_linear_PULP(frame_embeddings_norm.to('cpu').T, video_embedding_norm.to('cpu'))
-    # X = solve_sparse_binary_greedy(frame_embeddings_norm.to('cpu').T, video_embedding_norm.to('cpu'))
     best_x, best_error, best_lambda = solve_with_lasso(frame_embeddings_norm.to('cpu').T, video_embedding_norm.to('cpu'))
+    visualize(np.nonzero(best_x)[0])
 
+    video_data = user_annotations()
+    video_id = '_xMr-HKMfVA'
+    user_summary = video_data[video_id].frame_mean
 
-    downsample_num = 240
-    frame_embeddings_norm_subset = frame_embeddings_norm[::downsample_num]
+    # downsample_num = 240
+    # frame_embeddings_norm_subset = frame_embeddings_norm[::downsample_num]
 
-    selected_combo =  l0_optimization(frame_embeddings_norm_subset.to('cpu').T, video_embedding_norm.to('cpu'))
-    selected_indices_in_original = (np.array(selected_combo).nonzero()[0] * downsample_num).tolist()
-    l0_simple_img_num = selected_indices_in_original[0] - 1 # need to iterate for other combos
-    l0_simple_img_path = f"/scratch3/kat049/STVT/STVT/STVT/datasets/datasets/datasets/ydata-tvsum50-v1_1/images/_xMr-HKMfVA/frame_{l0_simple_img_num:04d}.jpg"
-    Image.open(l0_simple_img_path).save(f'/scratch3/kat049/all-seeing/all-seeing-v2/temp_sgc/l0_img.jpg')
+    # selected_combo =  l0_optimization(frame_embeddings_norm_subset.to('cpu').T, video_embedding_norm.to('cpu'))
+    # selected_indices_in_original = (np.array(selected_combo).nonzero()[0] * downsample_num).tolist()
+    # l0_simple_img_num = selected_indices_in_original[0] - 1 # need to iterate for other combos
+    # l0_simple_img_path = f"/scratch3/kat049/STVT/STVT/STVT/datasets/datasets/datasets/ydata-tvsum50-v1_1/images/_xMr-HKMfVA/frame_{l0_simple_img_num:04d}.jpg"
+    # Image.open(l0_simple_img_path).save(f'/scratch3/kat049/all-seeing/all-seeing-v2/temp_sgc/l0_img.jpg')
 
     # array([0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
-
 
 def l0_optimization(A, y):
     """
@@ -290,16 +291,53 @@ def solve_with_lasso(A, y, alpha_range=None):
         
     return best_x, best_error, best_lambda
 
-def visualize():
-    fig, axes = plt.subplots(2, int(len(nonzero_indices[0])/2))
+def visualize(nonzero_indices):
+    print("Only drawing the first 8 frames")
+    
+    _, axes = plt.subplots(2, 4, figsize=(20, 10))
     t = 0
     for i in range(2):
         for j in range(4):
-            img_path = f"/scratch3/kat049/STVT/STVT/STVT/datasets/datasets/datasets/ydata-tvsum50-v1_1/images/_xMr-HKMfVA/frame_{nonzero_indices[0][t]:04d}.jpg"
+            img_path = f"/scratch3/kat049/STVT/STVT/STVT/datasets/datasets/datasets/ydata-tvsum50-v1_1/images/_xMr-HKMfVA/frame_{nonzero_indices[t]:04d}.jpg"
             axes[i,j].imshow(Image.open(img_path))
             axes[i,j].axis('off')
-            t +=1
-    plt.savefig('test.jpg')
+            t += 1
+    plt.savefig('/scratch3/kat049/all-seeing/all-seeing-v2/temp_sgc/lasso.jpg')
+
+def user_annotations():
+    import pandas as pd
+    filepath = '/scratch3/kat049/STVT/STVT/STVT/datasets/datasets/datasets/ydata-tvsum50-v1_1/data/ydata-tvsum50-anno.tsv'
+    df = pd.read_csv(filepath, sep='\t', header=None, names=['video_id', 'category', 'frame_values'])
+    video_data = {}
+    for video_id in df['video_id'].unique():
+        video_df = df[df['video_id'] == video_id].copy() # Create a copy to avoid SettingWithCopyWarning
+        
+        # Convert frame_values to a list of lists of integers. Handle potential errors
+        try:
+            video_df['frame_values'] = video_df['frame_values'].apply(lambda x: [int(val) for val in x.split(',')])
+        except ValueError:
+            print(f"Error: Invalid frame values for video {video_id}. Skipping this video.")
+            continue  # Skip to the next video if there's an error
+
+        # Find the maximum number of frames to ensure consistent DataFrame shape
+        max_frames = video_df['frame_values'].apply(len).max()
+        
+        frame_data = []
+        for _, row in video_df.iterrows():
+            frame_values = row['frame_values']
+            # Pad with zeros if a row has fewer frame values than the maximum
+            padded_values = frame_values + [0] * (max_frames - len(frame_values))  # Pad with 0s
+            frame_data.append(padded_values)
+
+        frame_array = np.array(frame_data)  # Convert to NumPy array for efficient calculations
+
+        frame_sum = np.sum(frame_array, axis=0)
+        frame_mean = np.mean(frame_array, axis=0)
+
+        results_df = pd.DataFrame({'frame_sum': frame_sum, 'frame_mean': frame_mean})
+        video_data[video_id] = results_df
+
+    return video_data
 
 
 if __name__ == "__main__":
@@ -320,3 +358,4 @@ if __name__ == "__main__":
 
     # eval_model(args)
     generate_pdf()
+    # user_annotations()
